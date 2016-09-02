@@ -59,6 +59,7 @@ from paramiko.message import Message
 from paramiko.packet import Packetizer, NeedRekeyException
 from paramiko.primes import ModulusPack
 from paramiko.py3compat import string_types, long, byte_ord, b, input, PY2
+from paramiko.rsacert import RSACert
 from paramiko.rsakey import RSAKey
 from paramiko.ecdsakey import ECDSAKey
 from paramiko.server import ServerInterface
@@ -204,6 +205,7 @@ class Transport (threading.Thread, ClosingContextManager):
     }
 
     _key_info = {
+        'ssh-rsa-cert-v01@openssh.com': RSACert,
         'ssh-rsa': RSAKey,
         'ssh-dss': DSSKey,
         'ecdsa-sha2-nistp256': ECDSAKey,
