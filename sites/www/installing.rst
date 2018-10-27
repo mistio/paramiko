@@ -19,15 +19,15 @@ via `pip <http://pip-installer.org>`_::
 
     $ pip install paramiko
 
-.. note::
-    Users who want the bleeding edge can install the development version via
-    ``pip install paramiko==dev``.
+We currently support **Python 2.7, 3.4+, and PyPy**. Users on Python 2.6 or
+older (or 3.3 or older) are urged to upgrade.
 
-We currently support **Python 2.6, 2.7, 3.3+, and PyPy**. Users on Python 2.5
-or older (or 3.2 or older) are urged to upgrade.
+Paramiko has only a few direct dependencies:
 
-Paramiko has only one direct hard dependency: the Cryptography library. See
-:ref:`cryptography`.
+- The big one, with its own sub-dependencies, is Cryptography; see :ref:`its
+  specific note below <cryptography>` for more details.
+- `bcrypt <https://pypi.org/project/bcrypt/>`_, for Ed25519 key support;
+- `pynacl <https://pypi.org/project/PyNaCl/>`_, also for Ed25519 key support.
 
 If you need GSS-API / SSPI support, see :ref:`the below subsection on it
 <gssapi>` for details on its optional dependencies.
@@ -101,7 +101,7 @@ due to their infrequent utility & non-platform-agnostic requirements):
 
 * It hopefully goes without saying but **all platforms** need **a working
   installation of GSS-API itself**, e.g. Heimdal.
-* **Unix** needs `python-gssapi <https://pypi.python.org/pypi/python-gssapi/>`_
+* **Unix** needs `python-gssapi <https://pypi.org/project/python-gssapi/>`_
   ``0.6.1`` or better.
 
   .. note:: This library appears to only function on Python 2.7 and up.
@@ -114,9 +114,3 @@ due to their infrequent utility & non-platform-agnostic requirements):
     delegation, make sure that the target host is trusted for delegation in the
     active directory configuration. For details see:
     http://technet.microsoft.com/en-us/library/cc738491%28v=ws.10%29.aspx
-
-
-.. toctree::
-    :hidden:
-
-    installing-1.x
