@@ -27,6 +27,7 @@ from hashlib import md5
 import re
 import struct
 
+import six
 import bcrypt
 
 from cryptography.hazmat.backends import default_backend
@@ -35,16 +36,27 @@ from cryptography.hazmat.primitives.ciphers import algorithms, modes, Cipher
 
 from paramiko import util
 from paramiko.common import o600
-from paramiko.py3compat import (
-    u,
-    encodebytes,
-    decodebytes,
-    b,
-    string_types,
-    byte_ord,
-)
+from paramiko.py3compat import u, b, encodebytes, decodebytes, string_types
 from paramiko.ssh_exception import SSHException, PasswordRequiredException
 from paramiko.message import Message
+
+
+OPENSSH_AUTH_MAGIC = b"openssh-key-v1\x00"
+
+
+def _unpad_openssh(data):
+    # At the moment, this is only used for unpadding private keys on disk. This
+    # really ought to be made constant time (possibly by upstreaming this logic
+    # into pyca/cryptography).
+    padding_length = six.indexbytes(data, -1)
+    if 0x20 <= padding_length < 0x7f:
+        return data  # no padding, last byte part comment (printable ascii)
+    if padding_length > 15:
+        raise SSHException("Invalid key")
+    for i in range(padding_length):
+        if six.indexbytes(data, i - padding_length) != i + 1:
+            raise SSHException("Invalid key")
+    return data[:-padding_length]
 
 
 class PKey(object):
@@ -73,14 +85,12 @@ class PKey(object):
             "mode": modes.CBC,
         },
     }
-    PRIVATE_KEY_FORMAT_ORIGINAL = 1
-    PRIVATE_KEY_FORMAT_OPENSSH = 2
+    _PRIVATE_KEY_FORMAT_ORIGINAL = 1
+    _PRIVATE_KEY_FORMAT_OPENSSH = 2
     BEGIN_TAG = re.compile(
         r"^-{5}BEGIN (RSA|DSA|EC|OPENSSH) PRIVATE KEY-{5}\s*$"
     )
-    END_TAG = re.compile(
-        r"^-{5}END (RSA|DSA|EC|OPENSSH) PRIVATE KEY-{5}\s*$"
-    )
+    END_TAG = re.compile(r"^-{5}END (RSA|DSA|EC|OPENSSH) PRIVATE KEY-{5}\s*$")
 
     def __init__(self, msg=None, data=None):
         """
@@ -311,7 +321,7 @@ class PKey(object):
         start += 1
         keytype = m.group(1) if m else None
         if start >= len(lines) or keytype is None:
-            raise SSHException("not a valid " + tag + " private key file")
+            raise SSHException("not a valid {} private key file".format(tag))
 
         # find the END tag
         end = start
@@ -321,13 +331,11 @@ class PKey(object):
             m = self.END_TAG.match(lines[end])
 
         if keytype == tag:
-            data = self._read_private_key_old_format(lines, end, password)
-            pkformat = self.PRIVATE_KEY_FORMAT_ORIGINAL
+            data = self._read_private_key_pem(lines, end, password)
+            pkformat = self._PRIVATE_KEY_FORMAT_ORIGINAL
         elif keytype == "OPENSSH":
-            data = self._read_private_key_new_format(
-                lines[start:end], password
-            )
-            pkformat = self.PRIVATE_KEY_FORMAT_OPENSSH
+            data = self._read_private_key_openssh(lines[start:end], password)
+            pkformat = self._PRIVATE_KEY_FORMAT_OPENSSH
         else:
             raise SSHException(
                 "encountered {} key, expected {} key".format(keytype, tag)
@@ -335,7 +343,11 @@ class PKey(object):
 
         return pkformat, data
 
-    def _read_private_key_old_format(self, lines, end, password):
+    def _got_bad_key_format_id(self, id_):
+        err = "{}._read_private_key() spat out an unknown key format id '{}'"
+        raise SSHException(err.format(self.__class__.__name__, id_))
+
+    def _read_private_key_pem(self, lines, end, password):
         start = 0
         # parse any headers first
         headers = {}
@@ -350,7 +362,7 @@ class PKey(object):
         try:
             data = decodebytes(b("".join(lines[start:end])))
         except base64.binascii.Error as e:
-            raise SSHException("base64 decoding error: " + str(e))
+            raise SSHException("base64 decoding error: {}".format(e))
         if "proc-type" not in headers:
             # unencryped: done
             return data
@@ -382,7 +394,7 @@ class PKey(object):
         ).decryptor()
         return decryptor.update(data) + decryptor.finalize()
 
-    def _read_private_key_new_format(self, lines, password):
+    def _read_private_key_openssh(self, lines, password):
         """
         Read the new OpenSSH SSH2 private key format available
         since OpenSSH version 6.5
@@ -392,11 +404,11 @@ class PKey(object):
         try:
             data = decodebytes(b("".join(lines)))
         except base64.binascii.Error as e:
-            raise SSHException("base64 decoding error: " + str(e))
+            raise SSHException("base64 decoding error: {}".format(e))
 
         # read data struct
-        auth_magic = data[:14]
-        if auth_magic != b("openssh-key-v1"):
+        auth_magic = data[:15]
+        if auth_magic != OPENSSH_AUTH_MAGIC:
             raise SSHException("unexpected OpenSSH key header encountered")
 
         cstruct = self._uint32_cstruct_unpack(data[15:], "sssur")
@@ -466,9 +478,7 @@ class PKey(object):
                 "OpenSSH private key file checkints do not match"
             )
 
-        # Remove padding
-        padlen = byte_ord(keydata[len(keydata) - 1])
-        return keydata[: len(keydata) - padlen]
+        return _unpad_openssh(keydata)
 
     def _uint32_cstruct_unpack(self, data, strformat):
         """
@@ -513,6 +523,9 @@ class PKey(object):
                     arr.append(s)
                     break
         except Exception as e:
+            # PKey-consuming code frequently wants to save-and-skip-over issues
+            # with loading keys, and uses SSHException as the (really friggin
+            # awful) signal for this. So for now...we do this.
             raise SSHException(str(e))
         return tuple(arr)
 
@@ -639,7 +652,8 @@ class PublicBlob(object):
     Tries to be as dumb as possible and barely cares about specific
     per-key-type data.
 
-    ..note::
+    .. note::
+
         Most of the time you'll want to call `from_file`, `from_string` or
         `from_message` for useful instantiation, the main constructor is
         basically "I should be using ``attrs`` for this."
